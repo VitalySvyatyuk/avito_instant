@@ -10,18 +10,64 @@ profile_dir: .browser_profile
 output_file: found.txt
 seen_file: seen.json
 
-# Каждый поиск задаётся либо готовой ссылкой (url — скопируйте из браузера
-# после настройки фильтров на сайте), либо параметрами query/region/category.
-# Фильтры price_min/price_max/include/exclude дополнительно проверяются локально.
+# Поиски. Включить/выключить поиск — enabled: true / false.
+#
+# Поиск задаётся либо готовой ссылкой (url — скопируйте из браузера после
+# настройки фильтров на сайте), либо параметрами query/region/category.
+# Дополнительно по заголовку объявления проверяются (регулярки, без учёта регистра):
+#   require — должны совпасть все;
+#   include — должна совпасть хотя бы одна;
+#   exclude — ни одна не должна совпасть.
 searches:
-  - name: ram_16gb
-    query: "оперативная память 16gb"
+  - name: ram
+    enabled: true
     region: all                       # all = вся Россия
     category: tovary_dlya_kompyutera
     price_min: 1000
     price_max: 4000
-    include: ['16\s*(gb|гб|g\b)']     # регулярки, заголовок должен совпасть хотя бы с одной
-    exclude: ['нерабоч', 'неисправ', 'запчаст', 'возврат']  # регулярки, при совпадении объявление пропускается
+    ram:                              # запрос строится сам: «оперативная память <type>»
+      type: ddr4                      # ddr3 / ddr4 / ddr5; null — любой
+      total_gb: 16                    # общий объём; null — любой
+      sticks: null                    # сколько планок: 1, 2, 4; null — любое (16 = 1x16, 2x8, 4x4)
+    exclude: &broken ['нерабоч', 'неисправ', 'запчаст', 'возврат', 'нюанс', 'бронь', 'серверн']
 
-  # - name: custom
-  #   url: "https://www.avito.ru/moskva/..."
+  # Системные блоки
+  - name: pc_gaming
+    enabled: false
+    query: "игровой компьютер"
+    region: all
+    category: nastolnye_kompyutery
+    price_min: 20000
+    price_max: 50000
+    exclude: *broken
+
+  - name: pc_ryzen5
+    enabled: false
+    query: "системный блок ryzen 5"
+    region: all
+    category: nastolnye_kompyutery
+    price_min: 15000
+    price_max: 40000
+    include: ['ryzen\s*5', 'r5\b', 'ryzen\s*[1-9]600']   # 1600/2600/.../7600 — тоже Ryzen 5
+    exclude: *broken
+
+  # Видеокарты
+  - name: gpu_rtx3060
+    enabled: false
+    query: "rtx 3060 12gb"
+    region: all
+    category: tovary_dlya_kompyutera
+    price_min: 12000
+    price_max: 22000
+    include: ['3060']
+    exclude: *broken
+
+  - name: gpu_rx6600
+    enabled: false
+    query: "rx 6600"
+    region: all
+    category: tovary_dlya_kompyutera
+    price_min: 10000
+    price_max: 18000
+    include: ['6600']
+    exclude: *broken

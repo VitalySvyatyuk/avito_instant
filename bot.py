@@ -33,26 +33,79 @@ EXTRACT_ITEMS_JS = """
 """
 
 
+# Объём в заголовке: "16gb", "16 Гб", "16G", "16 гигабайт".
+GB = r"\s*(?:gb|гб|g|гиг[а-яё]*)(?![a-zа-яё])"
+# Признаки комплекта из нескольких планок: "2x8", "2*16", "8gb x2", "2 шт", "комплект".
+MULTI_STICK = [
+    r"(?<!\d)[2-9]\s*[x×х*]\s*\d",
+    rf"\d(?:{GB})?\s*[x×х*]\s*[2-9](?!\d)",
+    r"(?<!\d)[2-9]\s*(?:шт|планк|модул)",
+    r"комплект|\bkit\b",
+]
+
+
+def kit_pattern(total_gb: int, sticks: int) -> str:
+    """Регулярка для `sticks` планок общим объёмом `total_gb`."""
+    if sticks == 1:
+        # не часть комплекта: не "2x16gb" и не "16gb x2"
+        return rf"(?<![\d×х*x])(?<![×х*x]\s){total_gb}{GB}(?!\s*[x×х*]\s*[2-9])"
+    per = total_gb // sticks
+    return "|".join([
+        rf"(?<!\d){sticks}\s*[x×х*]\s*{per}(?!\d)",                       # 2x16, 2*16
+        rf"(?<!\d){per}(?:{GB})?\s*[x×х*]\s*{sticks}(?!\d)",              # 16gb x2
+        rf"(?<!\d){sticks}\s*(?:шт\.?|планк\w*|модул\w*)?\s*по\s*{per}(?!\d)",  # 2 шт по 16
+    ])
+
+
+def ram_filters(ram: dict) -> tuple[list[str], list[str]]:
+    """Параметры блока `ram` из конфига -> (обязательные регулярки, исключающие)."""
+    require, exclude = [], []
+    if ram.get("type"):
+        generation = re.sub(r"\D", "", str(ram["type"]))
+        require.append(rf"ddr\s*{generation}(?!\d)")
+    total, sticks = ram.get("total_gb"), ram.get("sticks")
+    if total and sticks:
+        require.append(kit_pattern(total, sticks))
+        if sticks == 1:
+            exclude.extend(MULTI_STICK)
+    elif total:
+        require.append("|".join(kit_pattern(total, n) for n in (1, 2, 4) if total % n == 0))
+    elif sticks == 1:
+        exclude.extend(MULTI_STICK)
+    elif sticks:
+        require.append(rf"(?<!\d){sticks}\s*[x×х*]\s*\d|\d(?:{GB})?\s*[x×х*]\s*{sticks}(?!\d)")
+    return require, exclude
+
+
 @dataclass
 class Search:
     name: str
     url: str
     price_min: int | None = None
     price_max: int | None = None
+    require: list[re.Pattern] = field(default_factory=list)
     include: list[re.Pattern] = field(default_factory=list)
     exclude: list[re.Pattern] = field(default_factory=list)
 
     @classmethod
     def from_config(cls, raw: dict) -> "Search":
+        raw = dict(raw)
+        require, exclude = list(raw.get("require") or []), list(raw.get("exclude") or [])
+        if ram := raw.get("ram"):
+            ram_require, ram_exclude = ram_filters(ram)
+            require += ram_require
+            exclude += ram_exclude
+            raw.setdefault("query", " ".join(filter(None, ["оперативная память", ram.get("type")])))
         url = raw.get("url") or build_url(raw)
-        compile_all = lambda pats: [re.compile(p, re.IGNORECASE) for p in pats or []]
+        compile_all = lambda pats: [re.compile(p, re.IGNORECASE) for p in pats]
         return cls(
             name=raw["name"],
             url=url,
             price_min=raw.get("price_min"),
             price_max=raw.get("price_max"),
-            include=compile_all(raw.get("include")),
-            exclude=compile_all(raw.get("exclude")),
+            require=compile_all(require),
+            include=compile_all(raw.get("include") or []),
+            exclude=compile_all(exclude),
         )
 
     def matches(self, item: dict) -> bool:
@@ -62,6 +115,8 @@ class Search:
         if self.price_max is not None and (price is None or price > self.price_max):
             return False
         title = item["title"]
+        if not all(p.search(title) for p in self.require):
+            return False
         if self.include and not any(p.search(title) for p in self.include):
             return False
         return not any(p.search(title) for p in self.exclude)
@@ -184,7 +239,10 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
-    searches = [Search.from_config(s) for s in cfg["searches"]]
+    searches = [Search.from_config(s) for s in cfg["searches"] if s.get("enabled", True)]
+    if not searches:
+        sys.exit("В config.yaml нет включённых поисков (enabled: true).")
+    log("Активные поиски: " + ", ".join(s.name for s in searches))
     seen = SeenStore(Path(cfg.get("seen_file", "seen.json")))
     output = Path(cfg.get("output_file", "found.txt"))
     headless = cfg.get("headless", False)
