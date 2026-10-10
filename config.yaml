@@ -7,6 +7,9 @@ jitter_seconds: 3
 headless: false
 profile_dir: .browser_profile
 
+# Показывать серым новые объявления, не прошедшие фильтры, с причиной отказа.
+show_rejected: true
+
 output_file: found.txt
 seen_file: seen.json
 
@@ -24,12 +27,12 @@ searches:
     region: all                       # all = вся Россия
     category: tovary_dlya_kompyutera
     price_min: 1000
-    price_max: 4000
+    price_max: 24000
     ram:                              # запрос строится сам: «оперативная память <type>»
       type: ddr4                      # ddr3 / ddr4 / ddr5; null — любой
-      total_gb: 16                    # общий объём; null — любой
+      total_gb: 32                    # общий объём; null — любой
       sticks: null                    # сколько планок: 1, 2, 4; null — любое (16 = 1x16, 2x8, 4x4)
-    exclude: &broken ['нерабоч', 'неисправ', 'запчаст', 'возврат', 'нюанс', 'бронь', 'серверн']
+    exclude: &broken ['нерабоч', 'неисправ', 'запчаст', 'возврат', 'нюанс', 'бронь', 'серверн', '\becc\b', '\breg\b', 'r(eg)?dimm', 'lrdimm']
 
   # Системные блоки
   - name: pc_gaming

@@ -57,23 +57,25 @@ def kit_pattern(total_gb: int, sticks: int) -> str:
     ])
 
 
-def ram_filters(ram: dict) -> tuple[list[str], list[str]]:
-    """Параметры блока `ram` из конфига -> (обязательные регулярки, исключающие)."""
+def ram_filters(ram: dict) -> tuple[list[tuple[str, str]], list[str]]:
+    """Параметры блока `ram` из конфига -> ([(причина отказа, обязательная регулярка)], исключающие)."""
     require, exclude = [], []
     if ram.get("type"):
         generation = re.sub(r"\D", "", str(ram["type"]))
-        require.append(rf"ddr\s*{generation}(?!\d)")
+        require.append((f"не DDR{generation}", rf"ddr\s*{generation}(?!\d)"))
     total, sticks = ram.get("total_gb"), ram.get("sticks")
     if total and sticks:
-        require.append(kit_pattern(total, sticks))
+        label = f"не {total} ГБ" if sticks == 1 else f"не {sticks}×{total // sticks} ГБ"
+        require.append((label, kit_pattern(total, sticks)))
         if sticks == 1:
             exclude.extend(MULTI_STICK)
     elif total:
-        require.append("|".join(kit_pattern(total, n) for n in (1, 2, 4) if total % n == 0))
+        require.append((f"не {total} ГБ", "|".join(kit_pattern(total, n) for n in (1, 2, 4) if total % n == 0)))
     elif sticks == 1:
         exclude.extend(MULTI_STICK)
     elif sticks:
-        require.append(rf"(?<!\d){sticks}\s*[x×х*]\s*\d|\d(?:{GB})?\s*[x×х*]\s*{sticks}(?!\d)")
+        require.append((f"не {sticks} планки",
+                        rf"(?<!\d){sticks}\s*[x×х*]\s*\d|\d(?:{GB})?\s*[x×х*]\s*{sticks}(?!\d)"))
     return require, exclude
 
 
@@ -83,14 +85,15 @@ class Search:
     url: str
     price_min: int | None = None
     price_max: int | None = None
-    require: list[re.Pattern] = field(default_factory=list)
+    require: list[tuple[str, re.Pattern]] = field(default_factory=list)
     include: list[re.Pattern] = field(default_factory=list)
     exclude: list[re.Pattern] = field(default_factory=list)
 
     @classmethod
     def from_config(cls, raw: dict) -> "Search":
         raw = dict(raw)
-        require, exclude = list(raw.get("require") or []), list(raw.get("exclude") or [])
+        require = [(f"нет «{p}»", p) for p in raw.get("require") or []]
+        exclude = list(raw.get("exclude") or [])
         if ram := raw.get("ram"):
             ram_require, ram_exclude = ram_filters(ram)
             require += ram_require
@@ -103,23 +106,33 @@ class Search:
             url=url,
             price_min=raw.get("price_min"),
             price_max=raw.get("price_max"),
-            require=compile_all(require),
+            require=[(label, re.compile(p, re.IGNORECASE)) for label, p in require],
             include=compile_all(raw.get("include") or []),
             exclude=compile_all(exclude),
         )
 
-    def matches(self, item: dict) -> bool:
+    def reject_reason(self, item: dict) -> str | None:
+        """Почему объявление не подходит; None — подходит."""
         price = item["price"]
-        if self.price_min is not None and (price is None or price < self.price_min):
-            return False
-        if self.price_max is not None and (price is None or price > self.price_max):
-            return False
+        if price is None and (self.price_min is not None or self.price_max is not None):
+            return "цена не указана"
+        if self.price_min is not None and price < self.price_min:
+            return f"цена < {self.price_min}"
+        if self.price_max is not None and price > self.price_max:
+            return f"цена > {self.price_max}"
         title = item["title"]
-        if not all(p.search(title) for p in self.require):
-            return False
+        for label, p in self.require:
+            if not p.search(title):
+                return label
         if self.include and not any(p.search(title) for p in self.include):
-            return False
-        return not any(p.search(title) for p in self.exclude)
+            return "нет слов из include"
+        for p in self.exclude:
+            if m := p.search(title):
+                return f"исключение «{m.group(0)}»"
+        return None
+
+    def matches(self, item: dict) -> bool:
+        return self.reject_reason(item) is None
 
 
 def build_url(raw: dict) -> str:
@@ -145,6 +158,10 @@ if COLOR and os.name == "nt":
 def price_text(price: int | None) -> str:
     text = f"{price:,} ₽".replace(",", " ") if price is not None else "цена не указана"
     return f"\033[1;32m{text}\033[0m" if COLOR else text
+
+
+def gray(text: str) -> str:
+    return f"\033[90m{text}\033[0m" if COLOR else text
 
 
 def hyperlink(url: str, text: str) -> str:
@@ -205,14 +222,21 @@ def fetch_items(page: Page, url: str, headless: bool) -> list[dict]:
     return [i for i in page.evaluate(EXTRACT_ITEMS_JS) if i["id"] and i["href"]]
 
 
-def process(search: Search, items: list[dict], seen: SeenStore, output: Path) -> None:
+def process(search: Search, items: list[dict], seen: SeenStore, output: Path, show_rejected: bool) -> None:
     first_run = not seen.has_baseline(search.name)
     new_ids = set(seen.add(search.name, [i["id"] for i in items]))
     if first_run:
         log(f"[{search.name}] первый запуск: запомнил {len(new_ids)} текущих объявлений")
         return
-    found = [i for i in items if i["id"] in new_ids and search.matches(i)]
+    new_items = [i for i in items if i["id"] in new_ids]
+    found = [i for i in new_items if search.matches(i)]
     log(f"[{search.name}] объявлений: {len(items)}, новых: {len(new_ids)}, подходящих: {len(found)}")
+    if show_rejected:
+        for item in new_items:
+            if reason := search.reject_reason(item):
+                price = f"{item['price']:,} ₽".replace(",", " ") if item["price"] is not None else "—"
+                link = clean_link(item["href"])
+                print(gray(f"           мимо: {price} | ") + hyperlink(link, gray(item["title"])) + gray(f" — {reason}"), flush=True)
     if not found:
         return
     with output.open("a", encoding="utf-8") as f:
@@ -248,6 +272,7 @@ def main() -> None:
     headless = cfg.get("headless", False)
     interval = cfg.get("interval_seconds", 10)
     jitter = cfg.get("jitter_seconds", 0)
+    show_rejected = cfg.get("show_rejected", True)
 
     with sync_playwright() as p:
         context = open_context(p, cfg)
@@ -263,7 +288,7 @@ def main() -> None:
                     except Exception as e:
                         log(f"[{search.name}] ошибка запроса: {e}")
                         continue
-                    process(search, items, seen, output)
+                    process(search, items, seen, output, show_rejected)
                     seen.save()
                 if args.once:
                     break
