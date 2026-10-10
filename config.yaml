@@ -1,0 +1,27 @@
+# Интервал между циклами опроса (сек). К нему добавляется случайный разброс,
+# чтобы запросы не шли строго по таймеру.
+interval_seconds: 10
+jitter_seconds: 3
+
+# false — окно браузера видно (нужно, чтобы решить капчу Avito).
+headless: false
+profile_dir: .browser_profile
+
+output_file: found.txt
+seen_file: seen.json
+
+# Каждый поиск задаётся либо готовой ссылкой (url — скопируйте из браузера
+# после настройки фильтров на сайте), либо параметрами query/region/category.
+# Фильтры price_min/price_max/include/exclude дополнительно проверяются локально.
+searches:
+  - name: ram_16gb
+    query: "оперативная память 16gb"
+    region: all                       # all = вся Россия
+    category: tovary_dlya_kompyutera
+    price_min: 1000
+    price_max: 4000
+    include: ['16\s*(gb|гб|g\b)']     # регулярки, заголовок должен совпасть хотя бы с одной
+    exclude: ['нерабоч', 'неисправ', 'запчаст', 'возврат']  # регулярки, при совпадении объявление пропускается
+
+  # - name: custom
+  #   url: "https://www.avito.ru/moskva/..."
